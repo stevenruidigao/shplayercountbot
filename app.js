@@ -36,11 +36,16 @@ async function replySignupsEnabled(msg) {
 	
 	var enabled = await signupsEnabled();
 	signupStatus = (enabled ? 'enabled' : 'disabled');
-	msg.reply('signups are currently ' + signupStatus);
+	msg.reply('signups are currently ' + signupStatus + '.');
 	
 	if (!enabled) {
-		signupInProgress = true;
-		signup();
+		var id = setInterval(async () => {
+			signupInProgress = false;
+			await signup();
+			if (signupStatus !== 'disabled') {
+				clearInterval(id);
+			}
+		}, 180000);
 	}
 }
 
@@ -195,6 +200,8 @@ async function signupsEnabled() {
 		}
 		try {
 			let response = await makePOSTRequest(signupOptions, encodedData);
+			signupStatus = 'enabled';
+			signupInProgress = false;
 		} catch (e) {
 			signupStatus = 'disabled';
 			signupInProgress = true;
@@ -229,17 +236,20 @@ async function signup() {
 	try {
 		try {
 			let response = await makePOSTRequest(signupOptions, encodedData);
+			signupStatus = 'enabled';
+			signupInProgress = false;
 		} catch (e) {
+			signupStatus = 'disabled';
 			signupInProgress = true;
 		}
-		let data = (await response).data;
 		
-		signupStatus = (data.message !== 'Creating new accounts is temporarily disabled most likely due to a spam/bot/griefing attack.  If you need an exception, please contact our moderators on discord.' ? 'enabled' : 'disabled');
+		let data = response.data;
 		
-		if (signupInProgress) signup();
+		return !signupInProgress;
 	} catch(e) {
 		signupStatus = 'disabled';
 		signupInProgress = true;
-		setTimeout(signup(), 180000);
+		
+		return !signupInProgress;
 	}
 }
