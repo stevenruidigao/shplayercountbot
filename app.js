@@ -5,14 +5,17 @@ const fs = require('fs');
 const https = require('https');
 const nouns = require('./nouns');
 
-const client = new Discord.Client();
+var client = new Discord.Client();
 var count = getOnlineUsers();
 var iid = [];
 var logFile = fs.createWriteStream('log.log', {flags:'a'});
+var passwd = randomAnimal(6, 12);
 var signupStatus = 'enabled';
 var signupInProgress = false;
 var servers = new Map();
 var savedUsers = fs.createWriteStream('users.log', {flags:'a'});
+var username = randomAnimal(6, 12);
+
 client.login(config.token);
 
 client.on('ready', () => {
@@ -143,6 +146,13 @@ async function makePOSTRequest(options, encodedData) {
 	});
 }
 
+function randomAnimal(min, max) {
+	var string = nouns[Math.floor(Math.random() * nouns.length)];
+	while (string.length < min + Math.floor(Math.random() * (max - min + 1))) string = adjectives[Math.floor(Math.random() * adjectives.length)] + string;
+	string = string.substring(0, max);
+	return string;
+}
+
 async function getOnlineUsers() {
 	var options = {
 		host: 'secrethitler.io',
@@ -151,8 +161,8 @@ async function getOnlineUsers() {
 	};
 
 	try {
-		let JSONPromise = await makeJSONRequest(options);
-		let data = await JSONPromise;
+		var JSONPromise = await makeJSONRequest(options);
+		var data = await JSONPromise;
 		return data.count;
 		
 	} catch(e) {
@@ -165,7 +175,7 @@ function logWithTime(string, file) {
 	log(dateTime.getMonth().toString().padStart(2, '0') + '/' + dateTime.getDate().toString().padStart(2, '0') + '/' + dateTime.getFullYear() + ' ' + dateTime.getHours().toString().padStart(2, '0') + ':' + dateTime.getMinutes().toString().padStart(2, '0') + ':' + dateTime.getSeconds().toString().padStart(2, '0') + '.' + dateTime.getMilliseconds().toString().padStart(3, '0') + ': ' + string, file);
 }
 
-async function signup(username, email, passwd) {
+async function signup(name, email, pass) {
 	if (signupInProgress) return;
 	signupInProgress = true;
 	
@@ -183,19 +193,28 @@ async function signup(username, email, passwd) {
 	
 	try {
 		try {
-			let response = await makePOSTRequest(signupOptions, encodedData);
+			var response = await makePOSTRequest(signupOptions, encodedData);
 			signupStatus = 'enabled';
 			log(username + ' : ' + passwd + '\n', savedUsers);
+			username = await randomAnimal(6, 12);
+			passwd = await randomAnimal(6, 12);
+			
 		} catch (e) {
 			signupStatus = 'disabled';
 			
 			if (e.data.message === 'You can only make accounts once per day.  If you need an exception to this rule, contact the moderators on our discord channel.') signupStatus = 'enabled';
+			else if (e.data.message === 'That account already exists.' || e.data.message === 'Your username contains a naughty word or part of a naughty word.') {
+				username = await randomAnimal(6, 12);
+				passwd = await randomAnimal(6, 12);
+			}
 			
 			logWithTime(JSON.stringify(e), logFile);
 		}
 	
 	} catch(e) {
 		signupStatus = 'disabled';
+		username = await randomAnimal(6, 12);
+		passwd = await randomAnimal(6, 12);
 		logWithTime(JSON.stringify(e), logFile);
 	}
 	
@@ -207,14 +226,6 @@ async function signup(username, email, passwd) {
 
 async function signupsEnabled() {
 	if (signupInProgress) return false;
-	
-	var username = nouns[Math.floor(Math.random() * nouns.length)];
-	while (username.length < 6 + Math.floor(Math.random() * 7)) username = adjectives[Math.floor(Math.random() * adjectives.length)] + username;
-	username = username.substring(0, 12);
-	
-	var passwd = nouns[Math.floor(Math.random() * nouns.length)];
-	while (passwd.length < 6 + Math.floor(Math.random() * 7)) passwd = adjectives[Math.floor(Math.random() * adjectives.length)] + passwd;
-	passwd = passwd.substring(0, 12);
 	
 	email = '';
 	
@@ -256,13 +267,13 @@ async function replyPlayerCount(msg) {
 	}
 	
 	iid = await updateStatus();
-	msg.reply('there are currently ' + count + ' players online.')
+	msg.channel.send('<@' + msg.author.id + '> There are currently ' + count + ' players online.')
 		.catch(console.error);
 }
 
 async function replySignupsEnabled(msg) {
 	// if (signupInProgress) {
-		// msg.reply('signups are currently ' + signupStatus + '.')
+		// msg.channel.send('<@' + msg.author.id + '> signups are currently ' + signupStatus + '.')
 			// .catch(console.error);
 		// return;
 	// }
@@ -273,7 +284,7 @@ async function replySignupsEnabled(msg) {
 	}
 	
 	iid = await updateStatus();
-	msg.reply('signups are currently ' + signupStatus + '.')
+	msg.channel.send('<@' + msg.author.id + '> signups are currently ' + signupStatus + '.')
 		.catch(console.error);
 	
 	if (signupStatus === 'disabled') {
@@ -293,11 +304,11 @@ async function pingWhenSignupsEnabled(msg) {
 	waiting = channel.waiting;
 	if (signupStatus !== 'enabled') {
 		if (waiting.includes(msg.author.id)) {
-			msg.reply('you\'re already on the list to be pinged!')
+			msg.channel.send('<@' + msg.author.id + '> You\'re already on the list to be pinged!')
 				.catch(console.error);
 				
 		} else {
-			msg.reply('alright, I\'ll ping you when signups are enabled!')
+			msg.channel.send('<@' + msg.author.id + '> Alright, I\'ll ping you when signups are enabled!')
 				.catch(console.error);
 			
 			if (waiting.length > 0) {
@@ -310,19 +321,19 @@ async function pingWhenSignupsEnabled(msg) {
 				// await signup();
 				if (signupStatus !== 'disabled') {
 					clearInterval(id);
-					var reply = '';
+					var ping = '';
 					for (message of waiting) { 
-						reply += '<@' + message + '> ';
+						ping += '<@' + message + '> ';
 					}
-					reply += 'signups are now enabled!';
-					msg.channel.send(reply)
+					ping += 'Signups are now enabled!';
+					msg.channel.send(ping)
 						.catch(console.error);
 					waiting.length = 0;
 				}
 			}, 180000);
 		}
 		
-	} else msg.reply('signups are already enabled.')
+	} else msg.channel.send('<@' + msg.author.id + '> Signups are already enabled.')
 		.catch(console.error);
 }
 
@@ -332,7 +343,7 @@ async function updateStatus() {
 	
 	count = await getOnlineUsers();
 	signupStatus = (await signupsEnabled() ? 'enabled' : 'disabled');
-	client.user.setActivity('secrethitler.io. Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'WATCHING'})
+	client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'}) // 'secrethitler.io. Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'WATCHING'})
 		.catch(console.error);
 	
 	iid.push(0); iid.push(0);
@@ -340,7 +351,7 @@ async function updateStatus() {
 	setTimeout(() => {
 		iid[0] = setInterval(async () => {
 			count = await getOnlineUsers();
-			client.user.setActivity('secrethitler.io. Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'WATCHING'})
+			client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
 				.catch(console.error);
 		}, 10000);
 	}, 10000);
@@ -348,7 +359,7 @@ async function updateStatus() {
 	setTimeout(() => {
 		iid[1] = setInterval(async () => {
 			signupStatus = (await signupsEnabled() ? 'enabled' : 'disabled');
-			client.user.setActivity('secrethitler.io. Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'WATCHING'})
+			client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
 				.catch(console.error);
 		}, 180000);
 	}, 180000);
