@@ -99,6 +99,8 @@ async function makePOSTRequest(options, encodedData) {
 				json += chunk;
 			});
 			res.on('end', () => {
+				console.log(typeof res.statusCode);
+				console.log(res.statusCode === 403);
 				if (res.statusCode === 200) {
 					try {
 						data = JSON.parse(json);
@@ -172,7 +174,7 @@ async function getOnlineUsers() {
 
 function logWithTime(string, file) {
 	var dateTime = new Date(Date.now());
-	log(dateTime.getMonth().toString().padStart(2, '0') + '/' + dateTime.getDate().toString().padStart(2, '0') + '/' + dateTime.getFullYear() + ' ' + dateTime.getHours().toString().padStart(2, '0') + ':' + dateTime.getMinutes().toString().padStart(2, '0') + ':' + dateTime.getSeconds().toString().padStart(2, '0') + '.' + dateTime.getMilliseconds().toString().padStart(3, '0') + ': ' + string, file);
+	log((dateTime.getMonth() + 1).toString().padStart(2, '0') + '/' + dateTime.getDate().toString().padStart(2, '0') + '/' + dateTime.getFullYear() + ' ' + dateTime.getHours().toString().padStart(2, '0') + ':' + dateTime.getMinutes().toString().padStart(2, '0') + ':' + dateTime.getSeconds().toString().padStart(2, '0') + '.' + dateTime.getMilliseconds().toString().padStart(3, '0') + ': ' + string, file);
 }
 
 async function signup(name, email, pass) {
