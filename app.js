@@ -3,25 +3,30 @@ const config = require('./config.json');
 const Discord = require('discord.js');
 const fs = require('fs');
 const https = require('https');
+const io = require('socket.io-client');
 const nouns = require('./nouns');
 
+var calibration = 0;
 var client = new Discord.Client();
 var count = getOnlineUsers();
 var iid = [];
+var lastEnabled;
+var lastReconnectAttempt = Date();
 var logFile = fs.createWriteStream('log.log', {flags:'a'});
-var passwd = randomAnimal(6, 12);
-var signupStatus = 'enabled';
-var signupInProgress = false;
-var servers = new Map();
+var names = new Map();
 var savedUsers = fs.createWriteStream('users.log', {flags:'a'});
-var username = randomAnimal(6, 12);
+var servers = new Map();
+var signupInProgress = false;
+var signupStatus = 'enabled';
+
+gameChatBot();
 
 client.login(config.token);
 
 client.on('ready', () => {
 	log('\n', logFile);
 	logWithTime('***** Logged in as ' + client.user.tag + '! *****', logFile);
-	updateStatus();
+	updateStatus(randomAnimal(6, 12), randomAnimal(6, 12));
 });
 
 client.on('message', async msg => {
@@ -43,7 +48,10 @@ client.on('message', async msg => {
 		server.channels.set(msg.channel.id, channel);
 	}
 	
-	if (msg.content === 'player.count') {
+	if (msg.content === 'last.enabled') {
+		replyLastEnabled(msg);
+		
+	} else if (msg.content === 'player.count') {
 		replyPlayerCount(msg);
 	
 	} else if (msg.content === 'sign.ups') {
@@ -51,8 +59,97 @@ client.on('message', async msg => {
 	
 	} else if (msg.content === 'ping.me.acsu') {
 		pingWhenSignupsEnabled(msg);
+		
 	}
 });
+
+async function gameChatBot() {
+	var socket = await signin(config.username, config.password);
+	// console.log(socket.io.opts.transportOptions.polling);
+
+	socket.on('connect', () => {
+		console.log('Socket connected.');
+		socket.emit('hasSeenNewPlayerModal');
+		socket.emit('updateUserStatus');
+		socket.emit('getUserGameSettings');
+		socket.emit('sendUser', {
+			userName: config.username,
+			verified: false,
+			staffRole: '',
+			hasNotDismissedSignupModal: false
+		});
+		setTimeout(() => calibrate(socket), 1000);
+		socket.emit('upgrade');
+		// socket.emit('sendUser', {
+			// userName: config.username,
+			// verified: false,
+			// staffRole: '',
+			// hasNotDismissedSignupModal: false
+		// });
+	});
+		
+	socket.on('touChange', changeList => {
+		socket.emit('confirmTOU');
+	});
+	
+	socket.on('fetchUser', () => {
+		socket.emit('sendUser', {
+			userName: config.username,
+			verified: false,
+			staffRole: '',
+			hasNotDismissedSignupModal: false
+		});
+	});
+	
+	socket.on('userList', list => {
+		var now = new Date();
+		var since = now - this.lastReconnectAttempt;
+		if (since > 5000) {
+			lastReconnectAttempt = now;
+			if (!list.list.map(user => config.username).includes(config.username)) {
+				console.log('Detected own user not in list, attempting to reconnect...');
+				socket.emit('getUserGameSettings');
+			}
+		}
+	});
+	
+	socket.on('manualDisconnection', async () => {
+		console.log('Disconnected');
+		socket = await signin(config.username, config.password);
+	});
+	
+	socket.on('generalChats', chats => {
+		var msg = chats.list[chats.list.length - 1];
+		console.log(msg);
+		if (msg) {
+			if (msg.chat === 'l.astenabled') {
+				if (lastEnabled) reply('Signups were last enabled on ' + lastEnabled.toUTCString() + '.', socket);
+				
+				else reply('Signups haven\'t been enabled since this bot was last started.', socket);
+				
+			} else if (msg.chat === 'p.ing') {
+				console.log(BigInt(Date.now()) + ' : ' + Date.parse(msg.time) + ' Pong! Latency is ' + (Date.now() - Date.parse(msg.time)) + 'ms.');
+				reply('Pong! Latency is ' + (Date.now() - Date.parse(msg.time) + calibration) + 'ms.', socket);
+				
+			} else if (msg.chat === 'p.layercount') {
+				reply('There are currently **' + count + '** players online.', socket);
+				
+			} else if (msg.chat === 's.ignups') {
+				reply('Signups are currently **' + signupStatus + '**.', socket);
+				
+			} else if (msg.chat === 't.raffic') {
+				reply('Signups are disabled due to heavy traffic and granting exceptions at the moment is not possible as it would make the servers lag even more. We\'re working to fix these issues, so please check back later for updates! Sorry for the inconvenience!', socket);
+				
+			} else if (msg.chat === 'c.alibrate' && msg.userName === 'stevengao') {
+					calibrate(socket);
+					
+			} else if (msg.chat === 'calibrating' && msg.userName === 'acsutest') {
+					var received = Date.now();
+					calibration = Date.parse(msg.time) - (received - calibration) / 2 - calibration;
+			}
+		}
+	});
+}
 
 function log(string, file) {
 	console.log(string);
@@ -92,55 +189,60 @@ function makeJSONRequest(options) {
 async function makePOSTRequest(options, encodedData) {
 	return new Promise((resolve, reject) => {
 		var json = '';
-		var data = {};
+		var data = null;
 		
 		var req = https.request(options, res => {
 			res.on('data', chunk => {
 				json += chunk;
 			});
 			res.on('end', () => {
-				console.log(typeof res.statusCode);
-				console.log(res.statusCode === 403);
 				if (res.statusCode === 200) {
 					try {
-						data = JSON.parse(json);
+						if (json.length > 0) data = JSON.parse(json);
 						resolve({
-							error: 0,
-							statusCode: res.statusCode,
-							data: data
+							data: data,
+							error: null,
+							headers: res.headers,
+							statusCode: res.statusCode
 						});
 						
 					} catch (e) {
+						// log(e, logFile);
 						reject({
+							data: data,
 							error: e,
-							statusCode: res.statusCode,
-							data: data
+							headers: res.headers,
+							statusCode: res.statusCode
 						});
 					}
 					
 				} else {
 					try {
-						data = JSON.parse(json);
+						if (json.length > 0) data = JSON.parse(json);
 						reject({
-							error: 0,
-							statusCode: res.statusCode,
-							data: data
+							data: data,
+							error: null,
+							headers: res.headers,
+							statusCode: res.statusCode
 						});
 						
 					} catch (e) {
+						// log(e, logFile);
 						reject({
+							data: data,
 							error: e,
-							statusCode: res.statusCode,
-							data: data
+							headers: res.headers,
+							statusCode: res.statusCode
 						});
 					}
 				}
 			});
 		}).on('error', function (err) {
 			reject({
+				data: null,
 				error: err,
-				statusCode: -1,
-				data: ''
+				headers: null,
+				statusCode: null
 			});
 		});
 		req.write(encodedData);
@@ -148,11 +250,25 @@ async function makePOSTRequest(options, encodedData) {
 	});
 }
 
+function reply(message, socket) {
+	// console.log(socket);
+	socket.emit('addNewGeneralChat', {
+		username: config.username,
+		chat: message
+	});
+	
+}
+
 function randomAnimal(min, max) {
 	var string = nouns[Math.floor(Math.random() * nouns.length)];
 	while (string.length < min + Math.floor(Math.random() * (max - min + 1))) string = adjectives[Math.floor(Math.random() * adjectives.length)] + string;
 	string = string.substring(0, max);
 	return string;
+}
+
+function calibrate(socket) {
+	reply('calibrating', socket)
+	calibration = Date.now();
 }
 
 async function getOnlineUsers() {
@@ -172,16 +288,63 @@ async function getOnlineUsers() {
 	}
 }
 
+async function getSID(user, pass) {
+	var encodedData = 'username=' + user + '&password=' + pass;
+	
+	var signinOptions = {
+		host: 'secrethitler.io',
+		path: '/account/signin',
+		method: 'POST',
+        headers: {
+			'Content-Length': Buffer.byteLength(encodedData),
+			'Content-Type': 'application/x-www-form-urlencoded' // 'application/json',
+        }
+	}
+	try {
+		var response = await makePOSTRequest(signinOptions, encodedData);
+		return response.headers['set-cookie'][0].split(';')[0]; //.split('=')[1].split(';')[0];
+		
+	} catch(e) {
+		return e.headers['set-cookie'][0].split(';')[0]; //.split('=')[1].split(';')[0];
+	}
+}
+
 function logWithTime(string, file) {
-	var dateTime = new Date(Date.now());
+	var dateTime = new Date(); // Date.now()
 	log((dateTime.getMonth() + 1).toString().padStart(2, '0') + '/' + dateTime.getDate().toString().padStart(2, '0') + '/' + dateTime.getFullYear() + ' ' + dateTime.getHours().toString().padStart(2, '0') + ':' + dateTime.getMinutes().toString().padStart(2, '0') + ':' + dateTime.getSeconds().toString().padStart(2, '0') + '.' + dateTime.getMilliseconds().toString().padStart(3, '0') + ': ' + string, file);
 }
 
-async function signup(name, email, pass) {
-	if (signupInProgress) return;
+async function signin(user, pass) {
+	var SID = await getSID(user, pass);
+	
+	var socketOptions = {
+		reconnect: true,
+		transportOptions: {
+			polling: {
+				extraHeaders: {
+					'Cookie': SID
+				}
+			}
+		}
+	}
+
+	socket = await io('https://secrethitler.io', socketOptions);
+	return socket;
+}
+
+async function signup(user, email, pass, isPrivate, bypassKey) {
+	var result = {
+		data: null,
+		error: null,
+		headers: null,
+		statusCode: null
+	}
+	
+	if (signupInProgress) return result;
+	
 	signupInProgress = true;
 	
-	var encodedData = 'username=' + username + '&password=' + passwd + '&password2=' + passwd + '&email=' + email + '&isPrivate=false&bypassKey=';
+	var encodedData = 'username=' + user + '&password=' + pass + '&password2=' + pass + '&email=' + email + '&isPrivate=' + isPrivate + '&bypassKey=' + bypassKey;
 	
 	var signupOptions = {
 		host: 'secrethitler.io',
@@ -193,59 +356,46 @@ async function signup(name, email, pass) {
         }
 	}
 	
+	
 	try {
-		try {
-			var response = await makePOSTRequest(signupOptions, encodedData);
-			signupStatus = 'enabled';
-			log(username + ' : ' + passwd + '\n', savedUsers);
-			username = await randomAnimal(6, 12);
-			passwd = await randomAnimal(6, 12);
-			
-		} catch (e) {
-			signupStatus = 'disabled';
-			
-			if (e.data.message === 'You can only make accounts once per day.  If you need an exception to this rule, contact the moderators on our discord channel.') signupStatus = 'enabled';
-			else if (e.data.message === 'That account already exists.' || e.data.message === 'Your username contains a naughty word or part of a naughty word.') {
-				username = await randomAnimal(6, 12);
-				passwd = await randomAnimal(6, 12);
-			}
-			
-			logWithTime(JSON.stringify(e), logFile);
-		}
+		result = await makePOSTRequest(signupOptions, encodedData);
 	
 	} catch(e) {
-		signupStatus = 'disabled';
-		username = await randomAnimal(6, 12);
-		passwd = await randomAnimal(6, 12);
-		logWithTime(JSON.stringify(e), logFile);
+		result = e;
 	}
 	
 	// logWithTime('Signups are ' + signupStatus, logFile);
 	
 	signupInProgress = false;
-	return signupStatus === 'enabled';
+	return result;
+	// return signupStatus === 'enabled';
 }
 
-async function signupsEnabled() {
-	if (signupInProgress) return false;
+async function signupsEnabled(user, pass, isPrivate, bypassKey) {
+	if (signupInProgress) return {
+		signupStatus: signupStatus,
+		lastEnabled: lastEnabled,
+		user: user,
+		pass: pass
+	};
 	
-	email = '';
+	var email = '';
 	
-	//"username=acsutest&password=redacted&password2=redacted&email=acsutest@gmail.com&isPrivate=false&bypassKey=" https://secrethitler.io/account/signup
+	// username=acsutest&password=redacted&password2=redacted&email=acsutest@gmail.com&isPrivate=false&bypassKey=" https://secrethitler.io/account/signup
 	
-	log('\n' + username + ' : ' + passwd + '\n', logFile);
+	log('\n' + user + ' : ' + pass + '\n', logFile);
 	
-	var encodedData = 'username=' + username + '&password=' + passwd + '&password2=' + passwd + '&email=' + email + '&isPrivate=false&bypassKey='; // JSON.stringify(data);
+	// var encodedData = 'username=' + username + '&password=' + passwd + '&password2=' + passwd + '&email=' + email + '&isPrivate=false&bypassKey='; // JSON.stringify(data);
 	
-	var deleteAccountOptions = {
-		host: 'secrethitler.io',
-		path: '/account/delete-account',
-		method: 'POST',
-        headers: {
-			'Content-Length': Buffer.byteLength(encodedData),
-			'Content-Type': 'application/x-www-form-urlencoded' // 'application/json',
-        }
-	}
+	// var deleteAccountOptions = {
+		// host: 'secrethitler.io',
+		// path: '/account/delete-account',
+		// method: 'POST',
+        // headers: {
+			// 'Content-Length': Buffer.byteLength(encodedData),
+			// 'Content-Type': 'application/x-www-form-urlencoded' // 'application/json',
+        // }
+	// }
 	
 	try {
 		// try {
@@ -254,21 +404,65 @@ async function signupsEnabled() {
 		// } catch (e) {
 		// }
 		
-		return await signup(username, email, passwd);
+		var response = await signup(user, email, pass, isPrivate, bypassKey);
+		
+		if (!response.error && response.statusCode === 200) {
+			lastEnabled = new Date();
+			signupStatus = 'enabled';
+			log(user + ' : ' + passwd + '\n', savedUsers);
+			user = await randomAnimal(6, 12);
+			pass = await randomAnimal(6, 12);
+			
+		} else {
+			signupStatus = 'disabled';
+			
+			if (response.data) {
+				if (response.data.message === 'You can only make accounts once per day.  If you need an exception to this rule, contact the moderators on our discord channel.') signupStatus = 'enabled';
+				else if (response.statusCode === 401 || response.data.message === 'That account already exists.' 
+													 || response.data.message === 'Your username contains a naughty word or part of a naughty word.') {
+					user = await randomAnimal(6, 12);
+					pass = await randomAnimal(6, 12);
+				}
+				
+			} else if (error && !response.data) {
+					lastEnabled = new Date();
+					signupStatus = 'enabled';
+					log('*' + username + ' : ' + passwd + '\n', savedUsers);
+					user = await randomAnimal(6, 12);
+					pass = await randomAnimal(6, 12);
+			}
+			
+			delete response.headers;
+			logWithTime(JSON.stringify(response), logFile);
+		}
 	
 	} catch(e) {
+		logWithTime(e, logFile);
 		signupStatus = 'disabled';
-		return false;
 	}
+	
+	return {
+		signupStatus: signupStatus,
+		lastEnabled: lastEnabled,
+		user: user,
+		pass: pass
+	};
+}
+
+async function replyLastEnabled(msg) {
+	if (lastEnabled) msg.channel.send('<@' + msg.author.id + '> Signups were last enabled on ' + lastEnabled.toUTCString())
+		.catch(console.error);
+	else msg.channel.send('<@' + msg.author.id + '> Signups haven\'t been enabled since this bot was last started.')
+		.catch(console.error);
 }
 
 async function replyPlayerCount(msg) {
-	if (iid.length === 0) {
-		clearInterval(iid[0]);
-		clearInterval(iid[1]);
-	}
+	// if (iid.length === 0) {
+		// clearInterval(iid[0]);
+		// clearInterval(iid[1]);
+	// }
 	
-	iid = await updateStatus();
+	// iid = await updateStatus();
 	msg.channel.send('<@' + msg.author.id + '> There are currently ' + count + ' players online.')
 		.catch(console.error);
 }
@@ -280,28 +474,28 @@ async function replySignupsEnabled(msg) {
 		// return;
 	// }
 	
-	if (iid.length === 0) {
-		clearInterval(iid[0]);
-		clearInterval(iid[1]);
-	}
+	// if (iid.length === 0) {
+		// clearInterval(iid[0]);
+		// clearInterval(iid[1]);
+	// }
 	
-	iid = await updateStatus();
+	// iid = await updateStatus();
 	msg.channel.send('<@' + msg.author.id + '> signups are currently ' + signupStatus + '.')
 		.catch(console.error);
 	
-	if (signupStatus === 'disabled') {
-		signupInProgress = false;
-		// var id = setInterval(async () => {
-			// await signup();
-			// if (signupStatus !== 'disabled') {
-				// clearInterval(id);
-			// }
-		// }, 180000);
-	}
+	// if (signupStatus === 'disabled') {
+		// signupInProgress = false;
+		// // var id = setInterval(async () => {
+			// // await signup();
+			// // if (signupStatus !== 'disabled') {
+				// // clearInterval(id);
+			// // }
+		// // }, 180000);
+	// }
 }
 
 async function pingWhenSignupsEnabled(msg) {
-	await signupsEnabled();
+	// await signupsEnabled();
 	var channel = servers.get(msg.guild.id).channels.get(msg.channel.id);
 	waiting = channel.waiting;
 	if (signupStatus !== 'enabled') {
@@ -332,21 +526,28 @@ async function pingWhenSignupsEnabled(msg) {
 						.catch(console.error);
 					waiting.length = 0;
 				}
-			}, 180000);
+			}, 20000);
 		}
 		
 	} else msg.channel.send('<@' + msg.author.id + '> Signups are already enabled.')
 		.catch(console.error);
 }
 
-async function updateStatus() {
+async function updateStatus(user, pass) {
+	count = await getOnlineUsers();
+	
+	var signups = (await signupsEnabled(user, pass, false, ''));
+	signupStatus = signups.signupStatus;
+	lastEnabled = signups.lastEnabled;
+	user = signups.user;
+	pass = signups.pass;
+	
+	client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
+		.catch(console.error);
+	
+	// 'secrethitler.io. Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'WATCHING'})
 	// client.user.setPresence({activity: {name: 'Signups are ' + signupStatus + ', and there are ' + count + ' players online.'}, status: 'online'})
 	//			.catch(console.error);
-	
-	count = await getOnlineUsers();
-	signupStatus = (await signupsEnabled() ? 'enabled' : 'disabled');
-	client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'}) // 'secrethitler.io. Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'WATCHING'})
-		.catch(console.error);
 	
 	iid.push(0); iid.push(0);
 	
@@ -360,10 +561,15 @@ async function updateStatus() {
 	
 	setTimeout(() => {
 		iid[1] = setInterval(async () => {
-			signupStatus = (await signupsEnabled() ? 'enabled' : 'disabled');
+			var signups = (await signupsEnabled(user, pass, false, ''));
+			signupStatus = signups.signupStatus;
+			lastEnabled = signups.lastEnabled;
+			user = signups.user;
+			pass = signups.pass;
 			client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
 				.catch(console.error);
 		}, 180000);
 	}, 180000);
+	
 	return iid;
 }
