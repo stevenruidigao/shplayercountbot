@@ -1,16 +1,19 @@
+const configFile = './config.json';
+
 const adjectives = require('./adjectives');
-const config = require('./config.json');
+const config = require(configFile);
 const Discord = require('discord.js');
 const fs = require('fs');
 const https = require('https');
 const io = require('socket.io-client');
 const nouns = require('./nouns');
 
-var calibration = 0;
+var calibration = (config.calibration ? config.calibration : 0);
+var chatLog = fs.createWriteStream('chat.log', {flags: 'a'});
 var client = new Discord.Client();
 var count = getOnlineUsers();
 var iid = [];
-var lastEnabled;
+var lastEnabled = new Date(config.lastEnabled ? config.lastEnabled : null);
 var lastReconnectAttempt = Date();
 var logFile = fs.createWriteStream('log.log', {flags:'a'});
 var names = new Map();
@@ -21,12 +24,12 @@ var signupStatus = 'enabled';
 
 gameChatBot();
 
-client.login(config.token);
+if (config.token) client.login(config.token);
 
 client.on('ready', () => {
 	log('\n', logFile);
 	logWithTime('***** Logged in as ' + client.user.tag + '! *****', logFile);
-	updateStatus(randomAnimal(6, 12), randomAnimal(6, 12));
+	update(randomAnimal(6, 12), randomAnimal(6, 12));
 });
 
 client.on('message', async msg => {
@@ -65,6 +68,7 @@ client.on('message', async msg => {
 
 async function gameChatBot() {
 	var socket = await signin(config.username, config.password);
+	
 	// console.log(socket.io.opts.transportOptions.polling);
 
 	socket.on('connect', () => {
@@ -120,32 +124,34 @@ async function gameChatBot() {
 	
 	socket.on('generalChats', chats => {
 		var msg = chats.list[chats.list.length - 1];
-		console.log(msg);
+		chatLog.write(msg.chat + '\n');
 		if (msg) {
 			if (msg.chat === 'l.astenabled') {
-				if (lastEnabled) reply('Signups were last enabled on ' + lastEnabled.toUTCString() + '.', socket);
+				if (lastEnabled) reply('Signups were last enabled on **' + lastEnabled.toUTCString() + '** .', socket);
 				
 				else reply('Signups haven\'t been enabled since this bot was last started.', socket);
 				
 			} else if (msg.chat === 'p.ing') {
 				console.log(BigInt(Date.now()) + ' : ' + Date.parse(msg.time) + ' Pong! Latency is ' + (Date.now() - Date.parse(msg.time)) + 'ms.');
-				reply('Pong! Latency is ' + (Date.now() - Date.parse(msg.time) + calibration) + 'ms.', socket);
+				reply('Pong! Latency is **' + (Date.now() - Date.parse(msg.time) + calibration) + '** ms.', socket);
 				
 			} else if (msg.chat === 'p.layercount') {
 				reply('There are currently **' + count + '** players online.', socket);
 				
 			} else if (msg.chat === 's.ignups') {
-				reply('Signups are currently **' + signupStatus + '**.', socket);
+				reply('Signups are currently **' + signupStatus + '** .', socket);
 				
-			} else if (msg.chat === 't.raffic') {
+			} else if (msg.chat === 't.raffic' && signupStatus !== 'eanbled') {
 				reply('Signups are disabled due to heavy traffic and granting exceptions at the moment is not possible as it would make the servers lag even more. We\'re working to fix these issues, so please check back later for updates! Sorry for the inconvenience!', socket);
 				
 			} else if (msg.chat === 'c.alibrate' && msg.userName === 'stevengao') {
 					calibrate(socket);
 					
 			} else if (msg.chat === 'calibrating' && msg.userName === 'acsutest') {
-					var received = Date.now();
-					calibration = Date.parse(msg.time) - (received - calibration) / 2 - calibration;
+				var received = Date.now();
+				calibration = Date.parse(msg.time) - (received - calibration) / 2 - calibration;
+				config.calibration = calibration;
+				updateConfig(config, configFile);
 			}
 		}
 	});
@@ -266,6 +272,12 @@ function randomAnimal(min, max) {
 	return string;
 }
 
+function updateConfig(config, path) {
+	fs.writeFile(path, JSON.stringify(config, null, 2), (err) => {
+		if (err) console.error(err);
+	});
+}
+
 function calibrate(socket) {
 	reply('calibrating', socket)
 	calibration = Date.now();
@@ -315,19 +327,21 @@ function logWithTime(string, file) {
 }
 
 async function signin(user, pass) {
-	var SID = await getSID(user, pass);
-	
-	var socketOptions = {
-		reconnect: true,
-		transportOptions: {
-			polling: {
-				extraHeaders: {
-					'Cookie': SID
+	if (user && pass) {
+		var SID = await getSID(user, pass);
+		
+		var socketOptions = {
+			reconnect: true,
+			transportOptions: {
+				polling: {
+					extraHeaders: {
+						'Cookie': SID
+					}
 				}
 			}
 		}
 	}
-
+	
 	socket = await io('https://secrethitler.io', socketOptions);
 	return socket;
 }
@@ -441,6 +455,9 @@ async function signupsEnabled(user, pass, isPrivate, bypassKey) {
 		signupStatus = 'disabled';
 	}
 	
+	config.lastEnabled = lastEnabled;
+	updateConfig(config, configFile);
+	
 	return {
 		signupStatus: signupStatus,
 		lastEnabled: lastEnabled,
@@ -533,7 +550,12 @@ async function pingWhenSignupsEnabled(msg) {
 		.catch(console.error);
 }
 
-async function updateStatus(user, pass) {
+async function updateStatus(signupStatus, count) {
+	if (config.token) client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
+		.catch(console.error);
+}
+
+async function update(user, pass) {
 	count = await getOnlineUsers();
 	
 	var signups = (await signupsEnabled(user, pass, false, ''));
@@ -542,8 +564,7 @@ async function updateStatus(user, pass) {
 	user = signups.user;
 	pass = signups.pass;
 	
-	client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
-		.catch(console.error);
+	updateStatus(signupStatus, count);
 	
 	// 'secrethitler.io. Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'WATCHING'})
 	// client.user.setPresence({activity: {name: 'Signups are ' + signupStatus + ', and there are ' + count + ' players online.'}, status: 'online'})
@@ -554,8 +575,7 @@ async function updateStatus(user, pass) {
 	setTimeout(() => {
 		iid[0] = setInterval(async () => {
 			count = await getOnlineUsers();
-			client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
-				.catch(console.error);
+			updateStatus(signupStatus, count);
 		}, 10000);
 	}, 10000);
 	
@@ -566,10 +586,9 @@ async function updateStatus(user, pass) {
 			lastEnabled = signups.lastEnabled;
 			user = signups.user;
 			pass = signups.pass;
-			client.user.setActivity('Signups are ' + signupStatus + ', and there are ' + count + ' players online.', {type: 'PLAYING'})
-				.catch(console.error);
-		}, 180000);
-	}, 180000);
+			updateStatus(signupStatus, count);
+		}, 60000);
+	}, 60000);
 	
 	return iid;
 }
