@@ -124,8 +124,10 @@ async function gameChatBot() {
 	
 	socket.on('generalChats', chats => {
 		var msg = chats.list[chats.list.length - 1];
-		chatLog.write(msg.chat + '\n');
 		if (msg) {
+			time = new Date(msg.time);
+			console.log(time.getHours().toString().padStart(2, '0') + ':' + time.getMinutes().toString().padStart(2, '0') + ' ' + msg.userName + ': ' + msg.chat);
+			// chatLog.write(time.getHours().toString().padStart(2, '0') + ':' + time.getMinutes().toString().padStart(2, '0') + ' ' + msg.userName + ': ' + msg.chat + '\n');
 			if (msg.chat === 'l.astenabled') {
 				if (lastEnabled) reply('Signups were last enabled on **' + lastEnabled.toUTCString() + '** .', socket);
 				
@@ -176,18 +178,48 @@ function makeJSONRequest(options) {
 					try {
 						data = JSON.parse(json);
 						// data is available here:
-						resolve(data);
+						resolve({
+							data: data,
+							error: null,
+							headers: res.headers,
+							statusCode: res.statusCode
+						});
 						
 					} catch (e) {
-						reject(e);
+						reject({
+							data: data,
+							error: e,
+							headers: res.headers,
+							statusCode: res.statusCode
+						});
 					}
 					
 				} else {
-					reject(res.statusCode);
+					try {
+						data = JSON.parse(json);
+						reject({
+							data: data,
+							error: null,
+							headers: res.headers,
+							statusCode: res.statusCode
+						});
+					} catch (e) {
+						reject({
+							data: data,
+							error: e,
+							headers: res.headers,
+							statusCode: res.statusCode
+						});
+					}
 				}
 			});
 		}).on('error', function (err) {
-			reject(err);
+			reject({
+				data: null,
+				error: err,
+				headers: null,
+				statusCode: null
+			});
 		});
 	});
 }
@@ -293,7 +325,7 @@ async function getOnlineUsers() {
 	try {
 		var JSONPromise = await makeJSONRequest(options);
 		var data = await JSONPromise;
-		return data.count;
+		return data.data.count;
 		
 	} catch(e) {
 		logWithTime('Something\'s wrong, please try again later', logFile);
@@ -423,7 +455,7 @@ async function signupsEnabled(user, pass, isPrivate, bypassKey) {
 		if (!response.error && response.statusCode === 200) {
 			lastEnabled = new Date();
 			signupStatus = 'enabled';
-			log(user + ' : ' + passwd + '\n', savedUsers);
+			log(user + ' : ' + pass, savedUsers);
 			user = await randomAnimal(6, 12);
 			pass = await randomAnimal(6, 12);
 			
@@ -431,32 +463,36 @@ async function signupsEnabled(user, pass, isPrivate, bypassKey) {
 			signupStatus = 'disabled';
 			
 			if (response.data) {
-				if (response.data.message === 'You can only make accounts once per day.  If you need an exception to this rule, contact the moderators on our discord channel.') signupStatus = 'enabled';
-				else if (response.statusCode === 401 || response.data.message === 'That account already exists.' 
+				if (response.data.message === 'You can only make accounts once per day.  If you need an exception to this rule, contact the moderators on our discord channel.') {
+					signupStatus = 'enabled';
+					lastEnabled = new Date();
+				} else if (response.statusCode === 401 || response.data.message === 'That account already exists.' 
 													 || response.data.message === 'Your username contains a naughty word or part of a naughty word.') {
 					user = await randomAnimal(6, 12);
 					pass = await randomAnimal(6, 12);
 				}
 				
-			} else if (error && !response.data) {
+			} else if (response.error && !response.data && response.statusCode === 200) {
 					lastEnabled = new Date();
 					signupStatus = 'enabled';
-					log('*' + username + ' : ' + passwd + '\n', savedUsers);
+					log('*' + user + ' : ' + pass + '\n', savedUsers);
 					user = await randomAnimal(6, 12);
 					pass = await randomAnimal(6, 12);
 			}
 			
 			delete response.headers;
-			logWithTime(JSON.stringify(response), logFile);
 		}
+		logWithTime(JSON.stringify(response), logFile);
 	
 	} catch(e) {
 		logWithTime(e, logFile);
 		signupStatus = 'disabled';
 	}
 	
-	config.lastEnabled = lastEnabled;
-	updateConfig(config, configFile);
+	if (signupStatus === 'enabled') {
+		config.lastEnabled = lastEnabled;
+		updateConfig(config, configFile);
+	}
 	
 	return {
 		signupStatus: signupStatus,
